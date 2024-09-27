@@ -32,11 +32,21 @@ dependencies:
     sdk: flutter
   http: ^0.13.4
   web3dart: ^2.3.0
+  walletconnect_dart: ^0.0.11
+  qr_flutter: ^4.1.0  # For displaying QR codes (if needed)
+  uni_links: ^0.5.1   # For deep linking (optional)
+  url_launcher: ^6.0.9
+  flutter_web3: ^2.1.9
 
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.6
+
+
+dependency_overrides:
+  qr: null
+
 
 dev_dependencies:
   flutter_test:
@@ -48,6 +58,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^3.0.0
+  
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

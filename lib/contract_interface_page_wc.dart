@@ -1,10 +1,13 @@
 // lib/contract_interface_page.dart
-
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:web3dart/crypto.dart';
 import 'dart:convert';
 import 'package:web3dart/web3dart.dart';
-import 'package:flutter_web3/flutter_web3.dart' as fw3;
+import 'package:walletconnect_dart/walletconnect_dart.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:flutter/services.dart';
 
 class ContractInterfacePage extends StatefulWidget {
   @override
@@ -20,7 +23,7 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
 
   String _contractAddress = '';
   bool _contractLoaded = false;
-  String? _abiString; // Store the ABI as a String
+  List<dynamic> _abi = [];
   List<ContractFunction> _readFunctions = [];
   List<ContractFunction> _writeFunctions = [];
 
@@ -32,13 +35,42 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
 
   late Web3Client _client;
 
+  // WalletConnect variables
+  WalletConnect? _connector;
+  SessionStatus? _session;
+  String? _walletConnectUri;
+
   @override
   void initState() {
     super.initState();
     // Replace with your Ethereum node URL (Infura)
-    String rpcUrl =
-        'https://sepolia.infura.io/v3/5e5afd85b4aa4e7ab3719e32e9eee3a2'; // Replace with your Infura project ID
+    String rpcUrl = 'https://sepolia.infura.io/v3/5e5afd85b4aa4e7ab3719e32e9eee3a2';
     _client = Web3Client(rpcUrl, http.Client());
+
+    _connector = WalletConnect(
+      bridge: 'https://bridge.walletconnect.org',
+      clientMeta: const PeerMeta(
+        name: 'NinjaPay',
+        description: 'NinjaPay WalletConnect Integration',
+        url: 'https://ninjapay.in',
+        icons: [
+          'https://ninjapay.in/icon.png',
+        ],
+      ),
+    );
+
+    _connector!.on('connect', (session) {
+      setState(() {
+        _session = session as SessionStatus;
+        _walletAddress = _session!.accounts[0];
+        _walletConnected = true;
+        _walletConnectUri = null;
+      });
+    });
+
+    _connector!.on('disconnect', (payload) {
+      _disconnectWallet();
+    });
   }
 
   @override
@@ -49,44 +81,39 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
   }
 
   Future<void> _connectWallet() async {
-    if (!fw3.Ethereum.isSupported) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('MetaMask is not available in your browser')),
-      );
-      return;
-    }
-
-    try {
-      final accounts = await fw3.ethereum!.requestAccount();
-      fw3.ethereum!.onAccountsChanged((accounts) {
-        setState(() {
-          _walletAddress = accounts.first;
-        });
-      });
-
-      setState(() {
-        _walletAddress = accounts.first;
-        _walletConnected = true;
-      });
-    } on fw3.EthereumUserRejected {
-      print('User rejected the connection request');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('User rejected the connection request')),
-      );
-    } catch (e) {
-      print('Error connecting wallet: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to connect wallet')),
-      );
+    if (!_connector!.connected) {
+      try {
+        _session = await _connector!.createSession(
+          chainId: 11155111, // Sepolia chain ID
+          onDisplayUri: (uri) async {
+            // For mobile, use deep linking
+            if (await canLaunch(uri)) {
+              await launch(uri);
+            } else {
+              // For desktop/web, display QR code
+              setState(() {
+                _walletConnectUri = uri;
+              });
+            }
+          },
+        );
+      } catch (e) {
+        print('Error connecting wallet: $e');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to connect wallet')),
+        );
+      }
     }
   }
 
-  Future<void> _disconnectWallet() async {
-    // Note: MetaMask does not support programmatic disconnection
-    setState(() {
-      _walletAddress = '';
-      _walletConnected = false;
-    });
+  void _disconnectWallet() {
+    if (_connector != null && _connector!.connected) {
+      _connector!.killSession();
+      setState(() {
+        _walletConnected = false;
+        _walletAddress = '';
+      });
+    }
   }
 
   Future<void> _loadContract() async {
@@ -99,8 +126,7 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
     }
 
     // Fetch ABI from Etherscan
-    String apiKey =
-        'TZU9YP9Y15NI9W9TYHV6NGFZ78IVBKJ1WZ'; // Replace with your Etherscan API key
+    String apiKey = 'TZU9YP9Y15NI9W9TYHV6NGFZ78IVBKJ1WZ';
     String url =
         'https://api-sepolia.etherscan.io/api?module=contract&action=getabi&address=$contractAddress&apikey=$apiKey';
 
@@ -137,7 +163,7 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
 
       setState(() {
         _contractAddress = contractAddress;
-        _abiString = abiString; // Store the ABI string
+        _abi = abiJson;
         _deployedContract = contract;
         _readFunctions = readFunctions;
         _writeFunctions = writeFunctions;
@@ -174,16 +200,6 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
       return;
     }
 
-    // Ensure that _abiString is not null
-    if (_abiString == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content:
-                Text('ABI is not loaded. Please load the contract first.')),
-      );
-      return;
-    }
-
     List<dynamic> params = [];
     for (int i = 0; i < _paramControllers.length; i++) {
       String value = _paramControllers[i].text.trim();
@@ -192,7 +208,7 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
       dynamic parsedValue;
       try {
         if (typeName == 'address') {
-          parsedValue = value; // Use the address string directly
+          parsedValue = EthereumAddress.fromHex(value);
         } else if (typeName.startsWith('uint') || typeName.startsWith('int')) {
           parsedValue = BigInt.parse(value);
         } else if (typeName == 'bool') {
@@ -220,17 +236,11 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
     try {
       if (_selectedFunction!.isConstant) {
         // Read function
-        final contract = fw3.Contract(
-          _contractAddress,
-          _abiString!, // Use the ABI string here
-          fw3.provider!,
+        var result = await _client.call(
+          contract: _deployedContract!,
+          function: _selectedFunction!,
+          params: params,
         );
-
-        final result = await contract.call<dynamic>(
-          _selectedFunction!.name,
-          params,
-        );
-
         setState(() {
           _result = result.toString();
         });
@@ -243,40 +253,40 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
           return;
         }
 
-        final contract = fw3.Contract(
-          _contractAddress,
-          _abiString!, // Use the ABI string here
-          fw3.provider!.getSigner(),
+        // Create the transaction data
+        final transaction = Transaction.callContract(
+          contract: _deployedContract!,
+          function: _selectedFunction!,
+          parameters: params,
+          // Specify gas and value if needed
         );
 
-        // Send transaction
-        // final txResponse = await contract.send(
-        //   _selectedFunction!.name,
-        //   params,
-        // );
-        final txResponse = await contract.send(
-          _selectedFunction!.name,
-          params,
-          fw3.TransactionOverride(
-            nonce: 68,
-            // gasLimit: BigInt.from(300000), // Adjust as needed
-            // gasPrice: BigInt.parse('50000000000'), // 50 Gwei in wei
-            // Optionally, use maxPriorityFeePerGas and maxFeePerGas for EIP-1559 transactions
-          ),
-        );
+        // Encode the transaction data
+        final txData = await transaction.data;
 
-        final txReceipt =
-            await txResponse.wait(); // Wait for the transaction to be mined
+        // Create the transaction payload
+        final txPayload = {
+          'from': _walletAddress,
+          'to': _contractAddress,
+          'data': bytesToHex(txData!, include0x: true),
+          'gas': '0x5208', // Adjust gas limit as needed
+          // Include 'value' if sending Ether
+        };
+
+        // Send transaction using WalletConnect
+        final txHash = await _connector!.sendCustomRequest(
+          method: 'eth_sendTransaction',
+          params: [txPayload],
+        );
 
         setState(() {
-          _result = 'Transaction confirmed in block ${txReceipt.blockNumber}';
+          _result = 'Transaction hash: $txHash';
         });
       }
-    } catch (e, stackTrace) {
-      print('Error calling function: $e');
-      print('Stack trace: $stackTrace');
+    } catch (e) {
+      print('Error sending transaction: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error calling function: $e')),
+        SnackBar(content: Text('Error sending transaction')),
       );
     }
   }
@@ -390,6 +400,18 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
             if (_walletConnected) ...[
               SizedBox(height: 5),
               Text('Wallet Address: $_walletAddress'),
+            ],
+            if (_walletConnectUri != null) ...[
+              SizedBox(height: 20),
+              Text('Scan QR code with your wallet app:'),
+              SizedBox(height: 10),
+              Center(
+                child: QrImageView(
+                  data: _walletConnectUri!,
+                  version: QrVersions.auto,
+                  size: 200.0,
+                ),
+              ),
             ],
           ],
         ),

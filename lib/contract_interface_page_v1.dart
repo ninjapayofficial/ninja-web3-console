@@ -1,10 +1,8 @@
 // lib/contract_interface_page.dart
-
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:web3dart/web3dart.dart';
-import 'package:flutter_web3/flutter_web3.dart' as fw3;
 
 class ContractInterfacePage extends StatefulWidget {
   @override
@@ -14,13 +12,14 @@ class ContractInterfacePage extends StatefulWidget {
 class _ContractInterfacePageState extends State<ContractInterfacePage> {
   // Controllers for input fields
   TextEditingController _contractAddressController = TextEditingController();
+  TextEditingController _privateKeyController = TextEditingController();
 
   String _walletAddress = '';
   bool _walletConnected = false;
 
   String _contractAddress = '';
   bool _contractLoaded = false;
-  String? _abiString; // Store the ABI as a String
+  List<dynamic> _abi = [];
   List<ContractFunction> _readFunctions = [];
   List<ContractFunction> _writeFunctions = [];
 
@@ -37,56 +36,40 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
     super.initState();
     // Replace with your Ethereum node URL (Infura)
     String rpcUrl =
-        'https://sepolia.infura.io/v3/5e5afd85b4aa4e7ab3719e32e9eee3a2'; // Replace with your Infura project ID
+        'https://sepolia.infura.io/v3/5e5afd85b4aa4e7ab3719e32e9eee3a2';
     _client = Web3Client(rpcUrl, http.Client());
   }
 
   @override
   void dispose() {
     _contractAddressController.dispose();
+    _privateKeyController.dispose();
     _client.dispose();
     super.dispose();
   }
 
   Future<void> _connectWallet() async {
-    if (!fw3.Ethereum.isSupported) {
+    // For simplicity, we ask the user to input their private key
+    String privateKey = _privateKeyController.text.trim();
+    if (privateKey.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('MetaMask is not available in your browser')),
+        SnackBar(content: Text('Please enter your private key')),
       );
       return;
     }
 
     try {
-      final accounts = await fw3.ethereum!.requestAccount();
-      fw3.ethereum!.onAccountsChanged((accounts) {
-        setState(() {
-          _walletAddress = accounts.first;
-        });
-      });
-
+      EthPrivateKey credentials = EthPrivateKey.fromHex(privateKey);
+      EthereumAddress address = await credentials.extractAddress();
       setState(() {
-        _walletAddress = accounts.first;
+        _walletAddress = address.hexEip55;
         _walletConnected = true;
       });
-    } on fw3.EthereumUserRejected {
-      print('User rejected the connection request');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('User rejected the connection request')),
-      );
     } catch (e) {
-      print('Error connecting wallet: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to connect wallet')),
+        SnackBar(content: Text('Invalid private key')),
       );
     }
-  }
-
-  Future<void> _disconnectWallet() async {
-    // Note: MetaMask does not support programmatic disconnection
-    setState(() {
-      _walletAddress = '';
-      _walletConnected = false;
-    });
   }
 
   Future<void> _loadContract() async {
@@ -100,7 +83,7 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
 
     // Fetch ABI from Etherscan
     String apiKey =
-        'TZU9YP9Y15NI9W9TYHV6NGFZ78IVBKJ1WZ'; // Replace with your Etherscan API key
+        'TZU9YP9Y15NI9W9TYHV6NGFZ78IVBKJ1WZ'; //87903bdbd538f154a8f91efca7898ab62104761fbe5528367c7d546f18899036  //ef29194b26f48a52b7504e2c94a4ba6f7f7bd921afa9e1ed38904c2a738bb0f6
     String url =
         'https://api-sepolia.etherscan.io/api?module=contract&action=getabi&address=$contractAddress&apikey=$apiKey';
 
@@ -137,7 +120,7 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
 
       setState(() {
         _contractAddress = contractAddress;
-        _abiString = abiString; // Store the ABI string
+        _abi = abiJson;
         _deployedContract = contract;
         _readFunctions = readFunctions;
         _writeFunctions = writeFunctions;
@@ -174,16 +157,6 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
       return;
     }
 
-    // Ensure that _abiString is not null
-    if (_abiString == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content:
-                Text('ABI is not loaded. Please load the contract first.')),
-      );
-      return;
-    }
-
     List<dynamic> params = [];
     for (int i = 0; i < _paramControllers.length; i++) {
       String value = _paramControllers[i].text.trim();
@@ -192,7 +165,7 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
       dynamic parsedValue;
       try {
         if (typeName == 'address') {
-          parsedValue = value; // Use the address string directly
+          parsedValue = EthereumAddress.fromHex(value);
         } else if (typeName.startsWith('uint') || typeName.startsWith('int')) {
           parsedValue = BigInt.parse(value);
         } else if (typeName == 'bool') {
@@ -220,17 +193,11 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
     try {
       if (_selectedFunction!.isConstant) {
         // Read function
-        final contract = fw3.Contract(
-          _contractAddress,
-          _abiString!, // Use the ABI string here
-          fw3.provider!,
+        var result = await _client.call(
+          contract: _deployedContract!,
+          function: _selectedFunction!,
+          params: params,
         );
-
-        final result = await contract.call<dynamic>(
-          _selectedFunction!.name,
-          params,
-        );
-
         setState(() {
           _result = result.toString();
         });
@@ -243,40 +210,28 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
           return;
         }
 
-        final contract = fw3.Contract(
-          _contractAddress,
-          _abiString!, // Use the ABI string here
-          fw3.provider!.getSigner(),
-        );
+        String privateKey = _privateKeyController.text.trim();
+        EthPrivateKey credentials = EthPrivateKey.fromHex(privateKey);
 
-        // Send transaction
-        // final txResponse = await contract.send(
-        //   _selectedFunction!.name,
-        //   params,
-        // );
-        final txResponse = await contract.send(
-          _selectedFunction!.name,
-          params,
-          fw3.TransactionOverride(
-            nonce: 68,
-            // gasLimit: BigInt.from(300000), // Adjust as needed
-            // gasPrice: BigInt.parse('50000000000'), // 50 Gwei in wei
-            // Optionally, use maxPriorityFeePerGas and maxFeePerGas for EIP-1559 transactions
+        var tx = await _client.sendTransaction(
+          credentials,
+          Transaction.callContract(
+            contract: _deployedContract!,
+            function: _selectedFunction!,
+            parameters: params,
+            maxGas: 1000000,
           ),
+          chainId: 11155111, // Sepolia chain ID
         );
-
-        final txReceipt =
-            await txResponse.wait(); // Wait for the transaction to be mined
 
         setState(() {
-          _result = 'Transaction confirmed in block ${txReceipt.blockNumber}';
+          _result = 'Transaction sent: $tx';
         });
       }
-    } catch (e, stackTrace) {
+    } catch (e) {
       print('Error calling function: $e');
-      print('Stack trace: $stackTrace');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error calling function: $e')),
+        SnackBar(content: Text('Error calling function')),
       );
     }
   }
@@ -381,11 +336,19 @@ class _ContractInterfacePageState extends State<ContractInterfacePage> {
               Text(_result),
               SizedBox(height: 10),
             ],
-            ElevatedButton(
-              onPressed: _walletConnected ? _disconnectWallet : _connectWallet,
-              child: Text(
-                _walletConnected ? 'Disconnect Wallet' : 'Connect Wallet',
+            TextField(
+              controller: _privateKeyController,
+              decoration: InputDecoration(
+                labelText: 'Private Key',
+                border: OutlineInputBorder(),
               ),
+              obscureText: true,
+            ),
+            SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: _walletConnected ? null : _connectWallet,
+              child: Text(
+                  _walletConnected ? 'Wallet Connected' : 'Connect Wallet'),
             ),
             if (_walletConnected) ...[
               SizedBox(height: 5),
